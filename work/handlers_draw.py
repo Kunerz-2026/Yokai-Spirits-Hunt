@@ -333,6 +333,8 @@ def handle_draw_card(body_json):
         EQ_STATE['monster_lv'][uc] = 1
         EQ_STATE['monster_exp'][uc] = 0
         # feat 槽(20-25): "id#lv#isUse" 按 L97 UnLockLevel 类别放置 (同槽 & 连接; 与 talentList 同源; 空槽='' -> _mon 输出数字0)
+        #   UnLockLevel>6 的 5 条归高级系槽(见 state.feat_slots_for) —— 仍进槽, 所以 talentList 照旧全给,
+        #   _draw8002_test 抽18/19 的"talentList 与槽一致"保持成立。
         from state import feat_slots_for
         feat_slots = feat_slots_for(tall)
         card_parts.append(_mon(int(uc), mid=mid, num=100, skin=skin, skills=list(skills),

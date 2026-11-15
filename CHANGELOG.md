@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.1.5 — 2026-11-15
+
+### Fixed: raising the trait level now actually unlocks a trait
+
+Three defects behind the report *"monsters granted from the admin console can't unlock trait slots"*:
+
+- `handlers_specialty._featlev()` defaulted to **0** for monsters with no stored `monster_featlev`
+  entry, while `state.get_feat_parts()` sends **1**. Every admin-/GM-granted monster therefore showed
+  "trait level 1/6, first school lit" in the client, but the server's gate computed
+  `1 <= slot <= 0` → always false, so *activate* (1183) always answered `[30025]`. The default is now
+  1 (an explicitly stored 0 still counts as 0), and `ensure_features()` persists the initial level.
+- `1180` (total-level upgrade) only bumped the level: it returned an empty `tallentList` and never
+  filled the newly opened school. The client (`SpecialtyUpgrade.doSwallow` → `unlockTips()`) reads
+  `msg[4]` to announce "unlocked new trait: …", so levelling up looked like nothing had happened.
+  The new `_auto_unlock_slots()` seeds one candidate trait per school crossed (`isUse=1` when the
+  slot had no active entry), returns their ids in `tallentList`, and is idempotent.
+- `L97_Tallents.UnLockLevel` really has **7** tiers while the client only has 6 school slots. The
+  five traits with id `1024`–`1028` used to be dumped into the first empty slot (the basic school),
+  where they showed up under the wrong school and could never be extended. They are now assigned to
+  the advanced school (slot 6), and 1183 prefers exact-school candidates with the >6 ones as fallback.
+
+So raising the trait level now lights up one new school **and hands over one trait of that school**
+(with the unlock popup); spending 70 ghost-path points on *activate* still unlocks an extra trait in
+the same school.
 ## v0.1.4 — 2026-11-15
 
 ### Fixed: every login bag can now be paged; oversized replies are truncated instead of dropped

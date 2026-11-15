@@ -81,11 +81,20 @@ def _init_tables():
             continue
 
 def _featlev(ucode):
-    """特性总等级 (0..6) = **已解锁的特性系别槽数**。"""
+    """特性总等级 (0..6) = **已解锁的特性系别槽数**。
+
+    ★2026-11-15 修复（"后台发的怪，特性等级升级没用、激活不了槽"）:
+      缺记录时默认 **1**，与 `state.get_feat_parts()` 的下发口径（`.get(ucode, 1)`）一致。
+      旧实现默认 0 —— 而后台/GM 发的怪、以及新抽到还没升过级的怪，`monster_featlev` 里
+      **根本没有这条记录**（造怪路径不写它）⇒ 客户端按 1 显示「特性等级 Lv.1/6、第一系亮着」，
+      服务端却按 0 判 `1 <= slot <= 0` 恒假 ⇒ 点「激活」永远回 [30025] 槽位错误。
+      显式写 0 的（老档/测试）仍然按 0 算（`_specialty_selftest` ② 就是靠这个语义）。
+    """
     try:
-        return int(EQ_STATE.get('monster_featlev', {}).get(str(ucode), 0) or 0)
+        raw = EQ_STATE.get('monster_featlev', {}).get(str(ucode), 1)
+        return 1 if raw is None or raw == '' else int(raw)
     except Exception:
-        return 0
+        return 1
 
 
 def feat_slot_unlocked(ucode, slot):
@@ -322,10 +331,17 @@ def handle_specialty_extension(body_json):
         if '#' in p:
             have.add(p.split('#')[0])
     # 该类别 (UnLockLevel==slot) 的候选特性 (L97_Tallents)
+    #   ★2026-11-15: UnLockLevel>6 的 5 条(1024-1028)没有自己的系别槽 —— 客户端是 6 槽;
+    #     feat_slots_for 把它们归到**高级系(槽 6)**, 这里也必须让槽 6 能激活它们,
+    #     否则会出现"槽里有这条特性、却永远扩不了第二条"的死角。
+    #     精确系别的候选仍排在最前（_specialty_selftest ④ 要求槽内特性都属自己系别）。
     cmap = _tallent_class_map()
     _tall_classes = cmap if isinstance(cmap, dict) else {}
-    cands = [tid for tid, cls in sorted(_tall_classes.items(), key=lambda kv: int(kv[0]))
-             if int(cls) == slot and str(tid) not in have]
+    _ordered = [tid for tid, cls in sorted(_tall_classes.items(), key=lambda kv: int(kv[0]))
+                if str(tid) not in have]
+    cands = [tid for tid in _ordered if int(_tall_classes[tid]) == slot]
+    if slot == 6:
+        cands += [tid for tid in _ordered if int(_tall_classes[tid]) > 6]
     if not cands:
         return b'[30026]'
     new_id = str(cands[0])
@@ -348,6 +364,48 @@ def handle_specialty_extension(body_json):
     # ★v57: 把"成功路径上 mi 必有值"这一**推断**变成断言(见交接文档 §8.3)
     assert None not in data, '1183: 成功响应不得含 null'
     return ('[1,' + json.dumps(data, separators=(',', ':')) + ']').encode('utf-8')
+
+def _auto_unlock_slots(ucode, old_lv, new_lv):
+    """1180 升到 new_lv 后，给 (old_lv, new_lv] 每一个**新开放**的系别槽自动放一条候选特性。
+
+    ★2026-11-15 用户口径（方案：**升级自动解锁**）:
+      客户端 `NetSpecialtySumUpgrade` 的应答里 msg[4] 叫 `tallentList = 解锁的特性`，
+      `SpecialtyUpgrade.doSwallow` 的 `unlockTips()` 拿它弹「解锁新特性：xxx」——
+      说明官方设计里"特性总等级升级"本身就带出解锁。旧实现恒回 `[]`，于是玩家升完级
+      既看不到新特性、也没有提示，观感就是"升级没用"。
+      现在：每跨过一个系别槽就按 `L97_Tallents.UnLockLevel` 的候选顺序补一条，
+      槽内原本没有生效档时写成 isUse=1（保证立刻生效），否则写 isUse=0（之后用 1182 换档）。
+      幂等：槽里已有该系特性时跳过，不重复塞。
+    ⚠ 这里**不调用**槽位门禁 `feat_slot_unlocked` —— ⑧ 契约（`_specialty_selftest`）要求
+      门禁只出现在 1183 激活路径上，否则"固有特性升级(1181)"会被误伤。
+    """
+    out = []
+    try:
+        old_lv, new_lv = int(old_lv), int(new_lv)
+    except Exception:
+        return out
+    if new_lv <= old_lv:
+        return out
+    cmap = _tallent_class_map()
+    if not isinstance(cmap, dict):
+        return out
+    slots = ensure_features(ucode)
+    while len(slots) < 6:
+        slots.append('')
+    for s in range(max(1, old_lv + 1), min(6, new_lv) + 1):
+        cur = str(slots[s - 1] or '')
+        have = {p.split('#')[0] for p in cur.split('&') if '#' in p}
+        cands = [tid for tid, cls in sorted(cmap.items())
+                 if int(cls) == s and str(tid) not in have]
+        if not cands:
+            continue
+        new_id = int(cands[0])
+        has_active = any(p.split('#')[2:3] == ['1'] for p in cur.split('&') if '#' in p)
+        entry = '%d#0#%d' % (new_id, 0 if has_active else 1)
+        slots[s - 1] = (cur + '&' + entry) if cur else entry
+        out.append(new_id)
+    return out
+
 
 # ============================================================================
 # 6008 SPECIALTY_SUMUPGRADE: 特性总等级升级 (消耗 Type=41 经验道具 + 金币; 阶梯 L97_1; 最高6)
@@ -402,6 +460,7 @@ def handle_specialty_sum_upgrade(body_json):
         lv = 1
     elif lv > 6:
         lv = 6
+    old_lv = lv          # ★2026-11-15: 记录升级前的等级, 供 _auto_unlock_slots 算"新开放的槽"
     # 已达最高: 客户端 m_errorCode[30022] = "特性等级已达到最高"; 不扣资源 (客户端 m_type==1 无满级门, 依赖服务器)
     if lv >= 6:
         return b'[30022]'
@@ -426,9 +485,11 @@ def handle_specialty_sum_upgrade(body_json):
         matter_ret.append([mu, pid, int(EQ_STATE['prop'].get(mu, 0))])
     EQ_STATE['monster_featlev'][ucode] = lv
     EQ_STATE['monster_featexp'][ucode] = cur_exp
+    # ★2026-11-15: 升级自动解锁新开放的系别槽, 并把 id 回在 msg[4] tallentList 里
+    unlocked = _auto_unlock_slots(ucode, old_lv, lv)
     save_state()
     mi = _mon_with_state(ucode)
-    data = [_role_info(), mon_info_slot(mi, ucode, '1180'), matter_ret, []]
+    data = [_role_info(), mon_info_slot(mi, ucode, '1180'), matter_ret, unlocked]
     # ★v57: 把"成功路径上 mi 必有值"这个**推断**变成断言 —— 推断若不成立就显式报错,
     #   而不是静默发出 null 让客户端 pairs()/next() 抛错(6002/6003 就是这么炸的)。
     #   客户端 NetSpecialtySumUpgrade 对 msg[2] 是索引消费(null 安全), 但 LAW-A 是全局铁律。

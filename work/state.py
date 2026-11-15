@@ -2077,7 +2077,13 @@ def _tallent_class_map():
 
 def feat_slots_for(tallents):
     # 特性列表 -> 6槽 (槽串 "id#lv#isUse", 同槽多特征用 & 连接; isUse=1 仅首个生效档)
-    #   槽位 = 特征类别的 UnLockLevel (1-6); 未知类别兜底按输入顺序填空槽
+    #   槽位 = 特征类别的 UnLockLevel (1-6)
+    #   ★2026-11-15: UnLockLevel 实测 1..7 —— 7 档是 5 条(1024 朔月之眼/1025 鬼束发/
+    #     1026 鬼影衙役/1027 狐媚气/1028 南柯呓语), 客户端 UI 只有 6 个系别槽 (写死 /6),
+    #     属"官方扩表但客户端没跟上"的残留内容。
+    #     旧实现把这类"未知类别"兜底塞进**第一个空槽**(=基础系) -> 显示在错的系里;
+    #     现在统一归到**高级系(槽 6)** —— 既不丢特性(有 18 只怪的台服数据引用它们),
+    #     也不再污染基础系。候选顺序/对账口径见 handle_specialty_extension 的同名注释。
     cmap = _tallent_class_map()
     slots = [''] * 6
     used = set()
@@ -2085,14 +2091,9 @@ def feat_slots_for(tallents):
         if not t or int(t) <= 0:
             continue
         cls = cmap.get(int(t), 0)
-        if 1 <= cls <= 6:
-            idx = cls - 1
-        else:
-            idx = 0
-            while idx < 6 and slots[idx]:
-                idx += 1
-            if idx >= 6:
-                continue
+        if cls <= 0:
+            continue
+        idx = min(6, cls) - 1          # >6 一律归高级系(槽 6)
         used.add(idx)
         fs = '%d#%d#%d' % (int(t), 0, 1 if not slots[idx] else 0)
         slots[idx] = slots[idx] + '&' + fs if slots[idx] else fs
@@ -2102,6 +2103,15 @@ def ensure_features(ucode):
     # 特性槽幂等种子: 优先 L91 Tallent1/2 (CN 1.31 全 0=渠道阉割), 回退【YGTW 1.25 逐怪特性分配】
     #   (2026-09-07 破案: 广环老版 L91_Status 的 Tallent1/2 是完整逐怪分配, 247/247 id 与 CN 1.31 重合;
     #     特性 id 1001-1028 全部在 CN 1.31 L97_Tallents 有定义 -> 同游戏同怪物空间, 直接采用)
+    # ★2026-11-15: 顺手把"特性总等级"落成显式记录 (初始 1, 与 get_feat_parts 的下发口径一致)。
+    #   旧实现从不写这一项 -> 后台/GM 发的怪在 handlers_specialty._featlev() 里读到"缺记录",
+    #   而那边旧默认是 0 => 门禁 `1 <= slot <= 0` 恒假 => 点"激活"永远回 [30025]。
+    try:
+        _lev = EQ_STATE.setdefault('monster_featlev', {})
+        if str(ucode) not in _lev:
+            _lev[str(ucode)] = 1
+    except Exception:
+        pass
     if ucode in EQ_STATE['monster_feat']:
         return EQ_STATE['monster_feat'][ucode]
     info = get_monster_info_l91(ucode)
