@@ -448,7 +448,7 @@ def monster_bag_json(page=1):
         parts.append(m)
     return '[1,[[' + ','.join(parts) + '],"%d/%d"]]' % (page, total)
 
-def skill_bag_json():
+def skill_bag_json(page=1):
     # 技能背包 = 独立技能袋(ensure_skills 种子)的并集; item=[ucode,id,level,isload,isopen,ischange]
     #   isload 由 monster_skills 推算 (任一怪装配即1); id=技能行id(决定等级); level=行SkillLv
     #   ★ 2026-09-07(第二轮) 修复: 必须【全量下发】(含 isload=1 的怪物自带技能)!
@@ -469,4 +469,8 @@ def skill_bag_json():
         #   怪自带（L91 基础技能，由 `ensure_skills` 种进来）= 0。
         _ischange = 1 if str(k) in _produced else 0
         items.append('["%s",%d,%d,%d,%d,%d]' % (k, sid, lv, il.get(k, 0), isopen, _ischange))
-    return '[1,[[' + ','.join(items) + '],"1/1"]]'
+    # ★2026-11-15: 技能袋同样按字节预算分页（技能书攒多了一样撞 u16 帧体上限）。
+    #   客户端 NetSkillBag 支持 "cur/total" 翻页（CURRENTNUM=2，即它完成时正好 40%）。
+    from state import paginate_items as _pg
+    chunk, cur, total = _pg(items, page)
+    return '[1,[[' + ','.join(chunk) + '],"%d/%d"]]' % (cur, total)

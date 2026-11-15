@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.1.4 — 2026-11-15
+
+### Fixed: every login bag can now be paged; oversized replies are truncated instead of dropped
+
+The four login bags that could grow with player data (equipment / ghosts / props / skills) are all
+paged by a **byte budget** now (48 KB per page, `msg[2] = "current/total"`; the client's
+`NetEquipBag` / `NetGhostBag` / `NetPropBag` / `NetSkillBag` already auto-request the next page).
+`monster_bag_json` keeps its page-based paging.
+
+`state.shrink_payload()` is the last line of defence: if a reply that is *not* paged still exceeds
+the framing limit (u16 body length, 65533 bytes), `pack_login_frame()` trims the trailing rows of
+the top-level list until it fits and logs
+`[WIRE] !! msgid=... oversized ... truncated to ...` — so the client continues with partial data
+instead of waiting forever for a frame that never arrives.
+
+### Data file required: `tables_ygtw_1.25/L91_Status.json`
+
+The CN 1.31 table has `Tallent1/2 = 0` for every monster; static traits come from the TW 1.25
+`L91_Status.json`. When it is absent, `feat_source_fingerprint()` reports `…:missing` and **every
+monster's six trait slots come out empty**. `state._ygtw_table_path()` now looks in
+`$YGZZ_TABLE_YGTW`, `<work>/../revival_core/tables_ygtw_1.25/` and next to `table_dir()`, and
+prints a one-time warning if none of them exists. When the file appears later, the fingerprint
+changes and `recompute_features_on_source_change()` fills in the trait slots of saves that were
+seeded empty (`0:0 -> 1008:1009`), without touching slots the player already edited.
+
+**Trait policy** (unchanged, documented): the trait *catalogue* is shared by all monsters (the
+client reads it from `L97_Tallents`), but the server only sends the traits a monster has actually
+**unlocked**. `monster_featlev` (1–6) opens that many trait slots; each slot costs 70 鬼道积分 to
+unlock a trait (msg 1183). Monsters present in the tables keep their 1–2 innate traits; the rest
+start with none.
+
+---
+
 ## v0.1.3 — 2026-11-15
 
 ### Fixed: login stuck at 40% / 60% — responses over the 64 KB frame limit

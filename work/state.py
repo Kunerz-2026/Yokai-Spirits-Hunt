@@ -662,6 +662,58 @@ def paginate_items(items, page=1, budget=BAG_PAGE_BYTES):
     page = max(1, min(page, total))
     return pages[page - 1], page, total
 
+
+def shrink_payload(msgid, raw, limit=65533):
+    """兜底：把超长响应按"顶层列表尾部截断"压到 limit 以内（压不下去就原样返回）。
+
+    只处理最常见的两种形态（其余交给调用方报错）：
+        `[code, [rows...]]`              -> 裁 rows
+        `[code, [[rows...], extra...]]`  -> 裁 `msg[1][0]` 里的 rows
+    ★ 截断会**丢数据**，所以它只是"不分页的消息"的最后一道闸；会打 `[WIRE]` 日志。
+    ★★2026-11-15：放在 state 里（纯函数、无依赖），测试可直接用，不必 import game_server。
+    """
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return raw
+    if not isinstance(d, list) or len(d) < 2 or not isinstance(d[1], list):
+        return raw
+    holder = d[1]
+    where = 1
+    if d[1] and isinstance(d[1][0], list) and d[1][0] and isinstance(d[1][0][0], list):
+        holder = d[1][0]
+        where = 0
+    elif not (d[1] and isinstance(d[1][0], list)):
+        return raw
+
+    def size_of(keep):
+        cand = list(d)
+        if where == 0:
+            inner = list(d[1])
+            inner[0] = holder[:keep]
+            cand[1] = inner
+        else:
+            cand[1] = holder[:keep]
+        return len(json.dumps(cand, separators=(',', ':'), ensure_ascii=False).encode('utf-8'))
+
+    total = len(holder)
+    keep = total
+    while keep > 0 and size_of(keep) > limit:
+        keep = int(keep * 0.85) if int(keep * 0.85) < keep else keep - 1
+    if size_of(keep) > limit:
+        return raw
+    cand = list(d)
+    if where == 0:
+        inner = list(d[1])
+        inner[0] = holder[:keep]
+        cand[1] = inner
+    else:
+        cand[1] = holder[:keep]
+    out = json.dumps(cand, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+    print('[WIRE] !! msgid=%s 超限 %d B -> 截断到 %d B（行 %d -> %d）'
+          % (msgid, len(raw), len(out), total, keep), flush=True)
+    return out
+
 def get_monster_base(ucode):
     # 怪物基础数据 (mid, skin, num, skills): 优先查进化持久化覆盖 -> 初始3只 -> 抽到的怪
     #   (2026-09-07: 初始怪进化(6003)只更新内存 _MONSTER_BASE 曾致重启回退, 现以 monster_base_override 持久化)
@@ -2093,9 +2145,54 @@ _FEAT_SRC_UNKNOWN = '?'
 #     ("按名字回退"已实测**不成立**: 见 _audit_feat_name_fallback*.py / v40 总档 P0-2。)
 
 
+_YGTW_WARNED = False
+
+
+def _ygtw_candidates():
+    """台服 1.25 `L91_Status.json`（特性分配的唯一天然来源）的候选路径。
+
+    ★★2026-11-15（玩家反馈"所有怪物特性都一样／全是空的"）：发布包**只带了 CN 表**，
+      这个文件没随包发 —— `_ygtw_lookup()` 空转，于是**全服每只怪**的特性槽都是 6 个空槽，
+      而所有人都以为"特性早修好了"（本机 dev 里有这张表，所以本地怎么测都是好的）。
+      现在除了默认位置，还认 `YGZZ_TABLE_YGTW` 环境变量与 `table_dir()` 的兄弟目录。
+    """
+    out = []
+    env = (os.environ.get('YGZZ_TABLE_YGTW') or '').strip()
+    if env:
+        p = os.path.abspath(os.path.expanduser(env))
+        out.append(os.path.join(p, 'L91_Status.json') if os.path.isdir(p) else p)
+    out.append(os.path.join(_DIR, '..', 'revival_core', 'tables_ygtw_1.25', 'L91_Status.json'))
+    try:
+        td = table_dir()
+        out.append(os.path.join(os.path.dirname(td), 'tables_ygtw_1.25', 'L91_Status.json'))
+    except Exception:
+        pass
+    seen = []
+    for p in out:
+        p = os.path.normpath(p)
+        if p not in seen:
+            seen.append(p)
+    return seen
+
+
+def _ygtw_table_path():
+    """返回**实际存在**的那份 YGTW 表；都不在就返回默认路径并告警一次（不静默）。"""
+    global _YGTW_WARNED
+    cands = _ygtw_candidates()
+    for p in cands:
+        if os.path.isfile(p):
+            return p
+    if not _YGTW_WARNED:
+        _YGTW_WARNED = True
+        print('[state] !! 台服特性表缺失（找过 %s）=> 所有怪物特性槽都会是空的；'
+              '把 tables_ygtw_1.25/L91_Status.json 放到 revival_core 下即可'
+              % ' | '.join(cands), flush=True)
+    return cands[-1]
+
+
 def _feat_source_paths():
     return (os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_cn_1.31_dec', 'L91_Status.json')),
-            os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_ygtw_1.25', 'L91_Status.json')))
+            _ygtw_table_path())
 
 
 def feat_source_fingerprint():
@@ -2280,7 +2377,7 @@ def _ygtw_lookup():
     if _YGTW is None:
         tbl = {}
         try:
-            d = os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_ygtw_1.25', 'L91_Status.json'))
+            d = _ygtw_table_path()
             raw = open(d, 'rb').read()
             i = raw.rfind(b']')
             t = json.loads(raw[:i + 1].decode('utf-8'))

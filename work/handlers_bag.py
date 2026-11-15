@@ -320,8 +320,10 @@ def prop_bag_json(page=1):
     chunk, cur, total = _pg(items, page)
     return '[1,[[' + ','.join(chunk) + '],"%d/%d"]]' % (cur, total)
 
-def ghost_bag_json():
+def ghost_bag_json(page=1):
     # 动态元灵背包(1031): item=[ucode,id,count,isload] (SQGhost:insertItem)
+    #   ★2026-11-15: 与 1030/1033 同一套按字节预算分页（元灵攒多了同样会撞 u16 帧体上限）
+    from state import paginate_items as _pg
     items = []
     for g in EQ_STATE.get('ghost', []):
         try:
@@ -330,7 +332,8 @@ def ghost_bag_json():
             continue
         if cnt > 0:
             items.append('["%s",%d,%d,%d]' % (ucode, gid, cnt, isload))
-    return '[1,[[' + ','.join(items) + '],"1/1"]]'
+    chunk, cur, total = _pg(items, page)
+    return '[1,[[' + ','.join(chunk) + '],"%d/%d"]]' % (cur, total)
 
 def _prop_price(pid):
     pid = str(pid)

@@ -936,13 +936,18 @@ def read_frame(conn):
 def pack_login_frame(msgid, seqid, json):
     # ★★2026-11-15: 帧体长度字段是 **u16**（上限 65533）。超过时 `struct.pack('>H', ...)` 会抛
     #   `error("'H' format requires 0 <= number <= 65535")`，客户端**收不到任何响应**
-    #   （真机表现为"登录卡在某个百分比"）。这里给一句能看懂的错误，并用 `??` 标记消息号，
-    #   免得排查时只看到一行 struct.error。
+    #   （真机表现为"登录卡在某个百分比"）。
+    #   会随玩家数据增长的背包（1030/1031/1032/1033/1506）已经在服务端**分页**；
+    #   这里是**最后一道闸**：其余消息万一超长，就按顶层列表尾部截断压进上限并打日志，
+    #   至少让客户端能继续走，而不是永远等一个包。
     if len(json) > 65533:
-        print('[WIRE] !! 响应体过大 msgid=%s len=%d（u16 上限 65533）—— 该消息必须分页下发'
+        print('[WIRE] !! 响应体过大 msgid=%s len=%d（u16 上限 65533）—— 该消息应当分页下发'
               % (msgid, len(json)), flush=True)
-        raise ValueError('response too large for msgid=%s: %d bytes (max 65533, split into pages)'
-                         % (msgid, len(json)))
+        from state import shrink_payload as _shrink
+        json = _shrink(msgid, json)
+        if len(json) > 65533:
+            raise ValueError('response too large for msgid=%s: %d bytes (max 65533, split into pages)'
+                             % (msgid, len(json)))
     body = struct.pack('>H', len(json)) + json                    # CGMessage body [u16BE len][json]
     msg  = struct.pack('>III', 10000, msgid, len(body)) + body    # class=10000(generic CGMessage) | logical msgid | bodysize | body
     count = 1
@@ -1603,16 +1608,18 @@ def handle_game(conn, addr, port=0):
                     _pg = _req_page(raw)
                     resp = equip_bag_json(_pg).encode('utf-8')
                     conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1030) equip_bag page=%s n=%d' % (_pg, len(resp)))
-                elif mid == 1506:  # SKILL_BAG 动态 (含抽到怪的技能)
-                    resp = skill_bag_json().encode('utf-8')
-                    conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1506) skill_bag dyn n=%d' % len(resp))
+                elif mid == 1506:  # SKILL_BAG 动态 (含抽到怪的技能) —— 按字节预算分页
+                    _pg = _req_page(raw)
+                    resp = skill_bag_json(_pg).encode('utf-8')
+                    conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1506) skill_bag page=%s n=%d' % (_pg, len(resp)))
                 elif mid == 1033:  # PROP_BAG 动态 (真实数量/道具) —— 按字节预算分页
                     _pg = _req_page(raw)
                     resp = prop_bag_json(_pg).encode('utf-8')
                     conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1033) prop_bag page=%s n=%d' % (_pg, len(resp)))
-                elif mid == 1031:  # GHOST_BAG 动态 (元灵: [ucode,id,count,isload])
-                    resp = ghost_bag_json().encode('utf-8')
-                    conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1031) ghost_bag dyn n=%d' % len(resp))
+                elif mid == 1031:  # GHOST_BAG 动态 (元灵: [ucode,id,count,isload]) —— 按字节预算分页
+                    _pg = _req_page(raw)
+                    resp = ghost_bag_json(_pg).encode('utf-8')
+                    conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1031) ghost_bag page=%s n=%d' % (_pg, len(resp)))
                 elif mid == MSG['BAG_SELL']:  # 1178 出售 (道具/装备)
                     body_json = extract_body_json(raw)
                     resp = handle_bag_sell(body_json) if body_json is not None else b'[0,{}]'
