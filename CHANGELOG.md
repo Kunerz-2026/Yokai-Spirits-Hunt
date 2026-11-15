@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.1.3 — 2026-11-15
+
+### Fixed: login stuck at 40% / 60% — responses over the 64 KB frame limit
+
+Reported log:
+
+```
+FRAMING_A handler err msg(1030) error("'H' format requires 0 <= number <= 65535")
+```
+
+The framing-A body length field is **u16** (max 65533). `equip_bag_json()` sent the whole equipment
+bag in one frame; a player with many items made `struct.pack('>H', ...)` raise, so **not a single
+byte was sent** and the client waited forever on the third bag — the loading bar stopped at 40%
+(the prop bag has the same problem and stops at 60%).
+
+Now:
+
+- `state.paginate_items()` splits a list into pages by **byte budget** (48 KB, ~17 KB headroom);
+- `equip_bag_json(page)` / `prop_bag_json(page)` page the response and report a real
+  `"current/total"` in `msg[2]`; `game_server` reads `{"page": n}` for 1030/1033 the same way it
+  already did for 1032 (the client's `NetEquipBag` / `NetPropBag` auto-request the next page);
+- `pack_login_frame()` now prints `[WIRE] !! response too large msgid=... len=...` and raises a
+  readable error instead of the bare `'H' format` struct error.
+
+### Fixed: skill books could not be replaced ("default skills cannot be replaced")
+
+`skill_bag_json()` (1506) hard-coded the sixth field `ischange` to `0`. The client's
+`SkillInfo.lua:79` returns early when `ischange == 0`, showing
+"角色&怪物默认技能不可替换!" — so no skill book could ever open the replace dialog, even though
+`handle_skill_replace` (1505) worked. `ischange` is now derived from `skill_produced`
+(skill books = 1, monster's own L91 skills = 0), the same rule `handlers_skill._skill_item()` uses.
+
+### Note: empty trait slots are a data gap, not a bug
+
+`static_tallents()` returns `(0, 0)` for **1014 of 1261** monsters in both the CN 1.31 and the TW
+1.25 tables (e.g. every form of 坛中仙 and 天师-暮成雪); a `SourceID`-chain fallback finds talents
+for exactly 0 of them. The seeding mechanism itself is fine (e.g. 哪咤 1008/1009 renders six slots).
+Filling those slots would mean inventing data, so it is left empty.
+
+---
+
 ## v0.1.2 — 2026-11-14
 
 ### Fixed: players could get stuck on the loading screen at 40%

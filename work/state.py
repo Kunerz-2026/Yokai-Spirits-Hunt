@@ -621,6 +621,47 @@ import accounts as _accounts
 if _accounts.ENABLED:
     EQ_STATE = _accounts.EQ_STATE
 
+# ============================================================================
+# ★★2026-11-15（真机「登录卡 40%」）：**单帧 64 KB 上限**与分页工具
+#
+#   `pack_login_frame` 的帧体长度字段是 **u16**（`struct.pack('>H', len(body))`，上限 65533）。
+#   装备/道具这类"一次全发"的背包，玩家东西一多就会超限 —— 实测玩家报错：
+#       FRAMING_A handler err msg(1030) error("'H' format requires 0 <= number <= 65535")
+#   结果是 **客户端收不到任何响应**，进度条卡在 40%（第 3 个背包）。
+#
+#   客户端 `NetEquipBag` / `NetPropBag`/ `NetMonsterBag` 本来就支持
+#   `msg[2] = "当前页/总页"` 自动翻页，所以服务端按**字节预算**切页即可。
+# ============================================================================
+BAG_PAGE_BYTES = 48000      # 单页字节预算（65533 上限留 ~17 KB 余量给帧头与其它字段）
+
+
+def paginate_items(items, page=1, budget=BAG_PAGE_BYTES):
+    """把一串 JSON 片段（每个元素是一行的 json 字符串）按字节预算切页。
+
+    返回 `(chunk, cur, total)`；`page` 越界会夹到 `[1, total]`。
+    空列表返回 `([], 1, 1)`（与旧行为一致：`"1/1"`）。
+    """
+    pages = []
+    cur = []
+    size = 0
+    for s in items:
+        n = len(s) + 1                        # +1 = 逗号
+        if cur and size + n > budget:
+            pages.append(cur)
+            cur = []
+            size = 0
+        cur.append(s)
+        size += n
+    if cur or not pages:
+        pages.append(cur)
+    total = len(pages)
+    try:
+        page = int(page or 1)
+    except (TypeError, ValueError):
+        page = 1
+    page = max(1, min(page, total))
+    return pages[page - 1], page, total
+
 def get_monster_base(ucode):
     # 怪物基础数据 (mid, skin, num, skills): 优先查进化持久化覆盖 -> 初始3只 -> 抽到的怪
     #   (2026-09-07: 初始怪进化(6003)只更新内存 _MONSTER_BASE 曾致重启回退, 现以 monster_base_override 持久化)
@@ -1779,7 +1820,7 @@ def _load_equip_static():
     _EQUIP_LVLIMIT_TABLE, _EQUIP_CLASS_TABLE = {}, {}
     try:
         import json as _j
-        d = os.path.join(table_dir(), 'L01_Equipments.json')
+        d = os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_cn_1.31_dec', 'L01_Equipments.json'))
         raw = open(d, 'rb').read().decode('utf-8', 'replace')
         i = raw.rfind(']')
         t = _j.loads(raw[:i + 1])
@@ -1878,7 +1919,7 @@ def _l91_info():
     if _L91_T is None:
         tbl = {}
         try:
-            d = os.path.join(table_dir(), 'L91_Status.json')
+            d = os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_cn_1.31_dec', 'L91_Status.json'))
             raw = open(d, 'rb').read()
             i = raw.rfind(b']')
             t = json.loads(raw[:i + 1].decode('utf-8'))
@@ -1932,7 +1973,7 @@ def _l91_attrs():
     if _L91_ATTR is None:
         tbl = {}
         try:
-            d = os.path.join(table_dir(), 'L91_Status.json')
+            d = os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_cn_1.31_dec', 'L91_Status.json'))
             raw = open(d, 'rb').read()
             i = raw.rfind(b']')
             t = json.loads(raw[:i + 1].decode('utf-8'))
@@ -1967,7 +2008,7 @@ def _tallent_class_map():
         return _TALLENT_CLASS
     m = {}
     try:
-        d = os.path.join(table_dir(), 'L97_Tallents.json')
+        d = os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_cn_1.31_dec', 'L97_Tallents.json'))
         raw = open(d, 'rb').read()
         i = raw.rfind(b']')
         t = json.loads(raw[:i + 1].decode('utf-8'))
@@ -2053,9 +2094,8 @@ _FEAT_SRC_UNKNOWN = '?'
 
 
 def _feat_source_paths():
-    p = os.path.join(table_dir(), 'L91_Status.json')
-    alt = table_dir_alt()
-    return (p, os.path.join(alt, 'L91_Status.json')) if alt else (p,)
+    return (os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_cn_1.31_dec', 'L91_Status.json')),
+            os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_ygtw_1.25', 'L91_Status.json')))
 
 
 def feat_source_fingerprint():
@@ -2240,10 +2280,7 @@ def _ygtw_lookup():
     if _YGTW is None:
         tbl = {}
         try:
-            _alt = table_dir_alt()
-            if not _alt:
-                raise FileNotFoundError('YGZZ_TABLE_DIR_ALT not set')
-            d = os.path.join(_alt, 'L91_Status.json')
+            d = os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_ygtw_1.25', 'L91_Status.json'))
             raw = open(d, 'rb').read()
             i = raw.rfind(b']')
             t = json.loads(raw[:i + 1].decode('utf-8'))
@@ -2616,7 +2653,8 @@ def _ghost_no_stack_set():
     if _GHOST_NO_STACK is None:
         ids = set()
         try:
-            d = os.path.join(table_dir(), 'L03_Equipghost.json')
+            d = os.path.normpath(os.path.join(_DIR, '..', 'revival_core',
+                                              'tables_cn_1.31_dec', 'L03_Equipghost.json'))
             raw = open(d, 'rb').read().decode('utf-8', 'replace')
             t = json.loads(raw[:raw.rfind(']') + 1])
             for r in t[1:]:
@@ -2795,17 +2833,8 @@ def manual_unlocked_equip_ids():
 _TABLE_CACHE = {}
 
 def table_dir():
-    # Data tables are NOT bundled. Set YGZZ_TABLE_DIR or place them in <repo>/data/tables.
-    env = (os.environ.get('YGZZ_TABLE_DIR') or '').strip()
-    if env:
-        return os.path.abspath(os.path.expanduser(env))
-    return os.path.normpath(os.path.join(_DIR, '..', 'data', 'tables'))
-
-
-def table_dir_alt():
-    # Optional secondary data directory for legacy table sets. Returns None if unset.
-    env = (os.environ.get('YGZZ_TABLE_DIR_ALT') or '').strip()
-    return os.path.abspath(os.path.expanduser(env)) if env else None
+    # 明文表根目录: 从本文件位置推导, 不写死盘符 (原代码多处 r'<repo>\ygzz\revival_core\...')
+    return os.path.normpath(os.path.join(_DIR, '..', 'revival_core', 'tables_cn_1.31_dec'))
 
 def split_table_payload(d):
     """剥离数据表 JSON 的尾部封装块, 返回 (正文 bytes, 封装块 bytes)。
@@ -2820,7 +2849,7 @@ def split_table_payload(d):
     ★为什么必须看长度字段而不是 rfind(']'):
       全工程 30+ 处用的 `raw[:raw.rfind(']')+1]` 在一种情况下会切错:
       当"正文长度"这个 u32 的低字节恰好是 0x5D(']') 时, rfind 找到的是**长度字段里的那个字节**。
-      实测 `data/tables/L98_AIPriority.json` size=612 u32len=605=0x25D
+      实测 `tables_cn_1.31_dec/L98_AIPriority.json` size=612 u32len=605=0x25D
       -> rfind(']')=608 -> 切出的串多带 3 个 \\x00 和一个 ']'
       -> json.loads 抛 "Extra data: line 16 column 2 (char 505)" -> 调用方 except 掉 -> **静默空表**。
     """

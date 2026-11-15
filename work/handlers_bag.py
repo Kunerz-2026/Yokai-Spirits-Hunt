@@ -300,8 +300,11 @@ for _gid, _mid in (('8003', 1200001), ('8004', 1200001), ('8005', 1200001),
 from state import role_info_array  # noqa: E402  (唯一权威实现; 见 state.role_info_array 注释)
 
 # ---------- 道具背包(1033)动态生成 ----------
-def prop_bag_json():
+def prop_bag_json(page=1):
     # 动态道具背包: 反映 EQ_STATE['prop'] 真实数量 (ucode -> count), id 由 prop_id 取
+    #   ★★2026-11-15: 同 1030 —— 按字节预算分页（帧体 u16 上限 65533，道具多时一次全发会
+    #     抛 struct.error ⇒ 客户端收不到 1033 ⇒ 卡在 60%）。`NetPropBag` 支持 "cur/total" 翻页。
+    from state import paginate_items as _pg
     items = []
     # ★2026-11-14: 同 1030 —— 缺 `prop` 键时旧写法会 KeyError，客户端卡加载（第二道闸）。
     _prop = EQ_STATE.get('prop') or {}
@@ -314,7 +317,8 @@ def prop_bag_json():
             # 兼容旧状态: 仅 ucode 无 id 时, id=1001 (既有默认道具)
             pid = 1001
         items.append('["%s",%d,%d]' % (uc, pid, cnt))
-    return '[1,[[' + ','.join(items) + '],"1/1"]]'
+    chunk, cur, total = _pg(items, page)
+    return '[1,[[' + ','.join(chunk) + '],"%d/%d"]]' % (cur, total)
 
 def ghost_bag_json():
     # 动态元灵背包(1031): item=[ucode,id,count,isload] (SQGhost:insertItem)

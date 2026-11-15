@@ -109,7 +109,7 @@ def _pool_group_map():
         out = dict(_POOL_GROUP_FALLBACK)
     # ★2026-11-07（活动卡池轮换）：私服合成池（默认 1003）不在 D04 里，由
     #   `cardpool_rotation` 按周给出当期 CardGroupID。关闭轮换时它返回 {}，行为不变。
-    #   ⚠ 只在**内存里**合并，绝不改 `data/tables`。
+    #   ⚠ 只在**内存里**合并，绝不改 `tables_cn_1.31_dec`。
     try:
         from cardpool_rotation import pool_group_map as _rot_map
         out.update(_rot_map() or {})
@@ -458,8 +458,15 @@ def skill_bag_json():
     from state import ensure_skills, skill_isload_map
     s = ensure_skills()
     il = skill_isload_map()
+    _produced = set(str(x) for x in (EQ_STATE.get('skill_produced') or []))
     items = []
     for k in sorted(s, key=lambda x: int(x) if str(x).isdigit() else 0):
         sid, lv, isopen = s[k]
-        items.append('["%s",%d,%d,%d,%d,0]' % (k, sid, lv, il.get(k, 0), isopen))
+        # ★★2026-11-15（真机「技能书打上去无法更换」）：第 6 槽 `ischange` 修前**恒 0** ——
+        #   客户端 `SkillInfo.lua:79` 判 `ischange == 0` 就直接弹「角色&怪物默认技能不可替换!」，
+        #   所以任何技能（包括 1177 合出来的技能书）都点不开「更换」。
+        #   口径与 `handlers_skill._skill_item()` 完全一致：技能书（记在 `skill_produced`）= 1，
+        #   怪自带（L91 基础技能，由 `ensure_skills` 种进来）= 0。
+        _ischange = 1 if str(k) in _produced else 0
+        items.append('["%s",%d,%d,%d,%d,%d]' % (k, sid, lv, il.get(k, 0), isopen, _ischange))
     return '[1,[[' + ','.join(items) + '],"1/1"]]'

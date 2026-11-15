@@ -1,0 +1,20 @@
+fix(wire): page oversized bag responses; fix skill book replacement flag
+
+A player log showed:
+  FRAMING_A handler err msg(1030) error("'H' format requires 0 <= number <= 65535")
+
+The framing-A body length field is u16 (max 65533). equip_bag_json sent the whole bag in one
+frame, so a player with many items made struct.pack raise and NOTHING was sent -- the client
+waited forever on the third bag and the loading bar stopped at 40% (prop bag: 60%).
+
+- state.paginate_items(): split into pages by byte budget (48 KB).
+- equip_bag_json(page) / prop_bag_json(page): page the response, report a real "cur/total";
+  game_server reads {"page": n} for 1030/1033 like it already did for 1032 (the client's
+  NetEquipBag / NetPropBag auto-request the next page).
+- pack_login_frame(): print "[WIRE] !! response too large msgid=... len=..." and raise a
+  readable error instead of the bare 'H' format struct error.
+
+Also: skill_bag_json() (1506) hard-coded the sixth field ischange to 0, and the client's
+SkillInfo.lua:79 returns early when ischange == 0 -- so no skill book could open the replace
+dialog ("default skills cannot be replaced"). ischange is now derived from skill_produced
+(skill books = 1, monster's own L91 skills = 0), matching handlers_skill._skill_item().

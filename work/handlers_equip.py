@@ -377,15 +377,18 @@ def _equip_item(ucode):
             EQ_STATE['exp'].get(ucode, 0), a[0], a[1], islock, EQ_STATE['equip_isload'].get(ucode, 0),
             0, 0, 0, 0, a[2], a[3]]
 
-def equip_bag_json():
+def equip_bag_json(page=1):
     # 动态装备背包(1030): 反映真实 isload/等级 (避免静态硬编码导致"已装备但没穿上/等级都1"不符)
     #   ★2026-09-12 (v26): 统一走 _equip_item, 补上 islock + 4 个寄妖位 (旧实现这两处恒 0 ->
     #     "装备锁定不生效" 且 "附魔后重进背包寄妖图标消失")
-    # ★2026-11-14: 用 `.get(...) or {}` 兜底 —— 老档/手改档缺 `equip_id` 时，旧写法直接
-    #   KeyError ⇒ 1030 没有响应 ⇒ 客户端卡在 40%（`accounts._load` 已经会补键，这里是第二道闸）。
+    #   ★★2026-11-15: **按字节预算分页**。单帧帧体是 u16（上限 65533），装备多的玩家一次全发
+    #     会 `struct.error: 'H' format ...` ⇒ 客户端收不到 1030 ⇒ 登录卡 40%（真机实测）。
+    #     `NetEquipBag` 本来就按 `msg[2]="cur/total"` 自动翻页，所以这里只切页、不改协议。
+    from state import paginate_items as _pg
     items = [json.dumps(_equip_item(uc), separators=(',', ':'))
              for uc in sorted((EQ_STATE.get('equip_id') or {}).keys(), key=int)]
-    return '[1,[[' + ','.join(items) + '],"1/1"]]'
+    chunk, cur, total = _pg(items, page)
+    return '[1,[[' + ','.join(chunk) + '],"%d/%d"]]' % (cur, total)
 
 def _mon_with_state(ucode, skin_override=None):
     # 用 EQ_STATE['monster_ueq'] 的当前槽值构造 30字段怪物item(复用 _mon 输出 JSON 数组字符串)

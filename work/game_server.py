@@ -492,6 +492,21 @@ def dbg(s):
     except Exception:
         pass
 
+
+def _req_page(raw):
+    """从 framing-A 请求体里取 `{"page": n}`（缺省/坏包 -> 1）。
+
+    ★2026-11-15: 1030/1032/1033 三个"可能很大"的背包都走分页，客户端本来就会带 page。
+    """
+    _pg = 1
+    try:
+        _bz = extract_body_json(raw)
+        if _bz:
+            _pg = (json.loads(_bz) or {}).get('page') or 1
+    except Exception:
+        _pg = 1
+    return _pg
+
 # MSG_ID（节选自 ConfigNet.lua）
 MSG = dict(REGISTER=1001, ROLE_CREATE=1002, LOGIN=1003, ROLE_INFO=1004, GAME_SERVER=1005,
            SDK_LOGIN=1007, SESSION=1008, HEARTBEAT=1000, ROLE_NAME=1009, REDEEM_CODE=5000,
@@ -919,6 +934,15 @@ def read_frame(conn):
 #         [ count × ( u32BE type | u32BE seqid | u32BE bodysize | body ) ]
 #   body for a CGMessage = [ u16BE msglen | msgjson ]
 def pack_login_frame(msgid, seqid, json):
+    # ★★2026-11-15: 帧体长度字段是 **u16**（上限 65533）。超过时 `struct.pack('>H', ...)` 会抛
+    #   `error("'H' format requires 0 <= number <= 65535")`，客户端**收不到任何响应**
+    #   （真机表现为"登录卡在某个百分比"）。这里给一句能看懂的错误，并用 `??` 标记消息号，
+    #   免得排查时只看到一行 struct.error。
+    if len(json) > 65533:
+        print('[WIRE] !! 响应体过大 msgid=%s len=%d（u16 上限 65533）—— 该消息必须分页下发'
+              % (msgid, len(json)), flush=True)
+        raise ValueError('response too large for msgid=%s: %d bytes (max 65533, split into pages)'
+                         % (msgid, len(json)))
     body = struct.pack('>H', len(json)) + json                    # CGMessage body [u16BE len][json]
     msg  = struct.pack('>III', 10000, msgid, len(body)) + body    # class=10000(generic CGMessage) | logical msgid | bodysize | body
     count = 1
@@ -1572,24 +1596,20 @@ def handle_game(conn, addr, port=0):
                     # ★2026-11-14: 客户端 req = {"page": n}（`NetMonsterBag.lua:24`）；缺省/坏包按第 1 页。
                     #   第 1 页会把客户端本地怪物缓存清掉再灌（`NetMonsterBag.lua:51`），所以这里不能
                     #   "反正都一样"地忽略页号 —— 否则第 2 页请求会拿到第 1 页 -> 客户端以为没拉完。
-                    _pg = 1
-                    try:
-                        _bz = extract_body_json(raw)
-                        if _bz:
-                            _pg = (json.loads(_bz) or {}).get('page') or 1
-                    except Exception:
-                        _pg = 1
+                    _pg = _req_page(raw)
                     resp = monster_bag_json(_pg).encode('utf-8')
                     conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1032) monster_bag page=%s n=%d' % (_pg, len(resp)))
-                elif mid == 1030:  # EQUIP_BAG 动态 (反映真实 isload/等级, 避免"已装备但没穿上/等级都1")
-                    resp = equip_bag_json().encode('utf-8')
-                    conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1030) equip_bag dyn n=%d' % len(resp))
+                elif mid == 1030:  # EQUIP_BAG 动态 (反映真实 isload/等级) —— 按字节预算分页
+                    _pg = _req_page(raw)
+                    resp = equip_bag_json(_pg).encode('utf-8')
+                    conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1030) equip_bag page=%s n=%d' % (_pg, len(resp)))
                 elif mid == 1506:  # SKILL_BAG 动态 (含抽到怪的技能)
                     resp = skill_bag_json().encode('utf-8')
                     conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1506) skill_bag dyn n=%d' % len(resp))
-                elif mid == 1033:  # PROP_BAG 动态 (真实数量/道具, 含合成碎片)
-                    resp = prop_bag_json().encode('utf-8')
-                    conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1033) prop_bag dyn n=%d' % len(resp))
+                elif mid == 1033:  # PROP_BAG 动态 (真实数量/道具) —— 按字节预算分页
+                    _pg = _req_page(raw)
+                    resp = prop_bag_json(_pg).encode('utf-8')
+                    conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1033) prop_bag page=%s n=%d' % (_pg, len(resp)))
                 elif mid == 1031:  # GHOST_BAG 动态 (元灵: [ucode,id,count,isload])
                     resp = ghost_bag_json().encode('utf-8')
                     conn.sendall(pack_login_frame(mid, 0, resp)); log('sent msg(1031) ghost_bag dyn n=%d' % len(resp))
