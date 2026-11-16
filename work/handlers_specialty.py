@@ -392,17 +392,21 @@ def _auto_unlock_slots(ucode, old_lv, new_lv):
     slots = ensure_features(ucode)
     while len(slots) < 6:
         slots.append('')
-    for s in range(max(1, old_lv + 1), min(6, new_lv) + 1):
+    # 要补哪些槽:
+    #   · 常规: 本次新开放的 (old_lv, new_lv]
+    #   · ★2026-11-15 线上反馈 "空白的只能开 5 个槽": 没有自带特性的怪, 第 1 系从来没人补过
+    #     （它不属于"新开放"——lv 缺省就是 1），于是升到 6 级时只亮 5 个系，玩家看到的就是"少一个槽"。
+    #     所以 **首次升级(old_lv<=1) 连第 1 系一起补**; 已经有内容的系一律不碰(自带特性/玩家自己激活过的)。
+    base = 1 if old_lv <= 1 else old_lv + 1
+    for s in range(max(1, base), min(6, new_lv) + 1):
         cur = str(slots[s - 1] or '')
-        have = {p.split('#')[0] for p in cur.split('&') if '#' in p}
-        cands = [tid for tid, cls in sorted(cmap.items())
-                 if int(cls) == s and str(tid) not in have]
+        if cur.strip():
+            continue                      # 该系已有内容 -> 不重复塞（要加第二条走 1183 花积分解锁）
+        cands = [tid for tid, cls in sorted(cmap.items()) if int(cls) == s]
         if not cands:
             continue
         new_id = int(cands[0])
-        has_active = any(p.split('#')[2:3] == ['1'] for p in cur.split('&') if '#' in p)
-        entry = '%d#0#%d' % (new_id, 0 if has_active else 1)
-        slots[s - 1] = (cur + '&' + entry) if cur else entry
+        slots[s - 1] = '%d#0#1' % new_id   # 空槽的第一条就是生效档
         out.append(new_id)
     return out
 

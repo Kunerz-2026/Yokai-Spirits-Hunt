@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.1.6 — 2026-11-16
+
+### Fixed: the first school is seeded when the trait level is first raised
+
+A monster without innate traits (the majority of the roster) ended up with only **five** trait
+schools lit at level 6. `_auto_unlock_slots()` only filled the schools that a level-up *newly*
+opens, and the first school is never "newly opened" — it is available from level 1 — so it stayed
+empty forever. Monsters that do have innate traits were fine because `ensure_features()` seeds
+their first school from the data tables.
+
+`_auto_unlock_slots()` now also seeds the first school when `old_lv <= 1`, and skips any school
+that already has content, so innate traits and features the player unlocked with ghost-path points
+are never overwritten.
+
+Note: the client-side fixes shipped the same day (storing audio entries uncompressed inside the
+APK, firing the five login bag requests in parallel, and a nil guard in the bag UI) are **not**
+part of this repository — see README, "What is (and is not) in this repository".
 ## v0.1.5 — 2026-11-15
 
 ### Fixed: raising the trait level now actually unlocks a trait
